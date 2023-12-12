@@ -88,7 +88,12 @@ int av_usleep(unsigned usec)
     while (nanosleep(&ts, &ts) < 0 && errno == EINTR);
     return 0;
 #elif HAVE_USLEEP
+#if defined(__MORPHOS__) || defined(__AROS__)
+    usleep(usec);
+    return 0;
+#else
     return usleep(usec);
+#endif
 #elif HAVE_SLEEP
     Sleep(usec / 1000);
     return 0;
@@ -96,3 +101,4 @@ int av_usleep(unsigned usec)
     return AVERROR(ENOSYS);
 #endif
 }
+
