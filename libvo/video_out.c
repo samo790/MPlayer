@@ -1,23 +1,4 @@
 /*
- * This file is part of MPlayer.
- *
- * MPlayer is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
- *
- * MPlayer is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License along
- * with MPlayer; if not, write to the Free Software Foundation, Inc.,
- * 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
- */
-
-
-/*
  * libvo common functions, variables used by many/all drivers.
  *
  * This file is part of MPlayer.
@@ -63,7 +44,7 @@ int xinerama_screen = -1;
 int xinerama_x;
 int xinerama_y;
 
-// Currect resolution/bpp on screen:  (should be autodetected by vo_init())
+// Correct resolution/bpp on screen:  (should be autodetected by vo_init())
 int vo_depthonscreen=0;
 int vo_screenwidth=0;
 int vo_screenheight=0;
@@ -138,6 +119,14 @@ extern const vo_functions_t video_out_zr;
 extern const vo_functions_t video_out_zr2;
 extern const vo_functions_t video_out_bl;
 extern const vo_functions_t video_out_fbdev2;
+#if defined(__MORPHOS__) || defined(__AROS__)
+extern vo_functions_t video_out_cgx_overlay;
+extern vo_functions_t video_out_cgx_vmem;
+extern vo_functions_t video_out_cgx_wpa;
+#ifdef CONFIG_GUI
+extern vo_functions_t video_out_cgx_overlay_gui;
+#endif
+#endif
 extern const vo_functions_t video_out_png;
 extern const vo_functions_t video_out_ggi;
 extern const vo_functions_t video_out_aa;
@@ -163,6 +152,7 @@ extern const vo_functions_t video_out_pnm;
 extern const vo_functions_t video_out_md5sum;
 extern const vo_functions_t video_out_mng;
 
+
 extern const vo_functions_t video_out_comp;
 extern const vo_functions_t video_out_comp_yuv;
 extern const vo_functions_t video_out_comp_yuv2;
@@ -170,6 +160,7 @@ extern const vo_functions_t video_out_cgx_wpa;
 extern const vo_functions_t video_out_p96_pip;
 extern const vo_functions_t video_out_pip;
 extern const vo_functions_t video_out_amiga;
+
 
 /* The following declarations are _not_ const because functions pointers
  * get overloaded during (re)initialization. */
@@ -183,14 +174,26 @@ extern vo_functions_t video_out_xvidix;
 
 const vo_functions_t* const video_out_drivers[] =
 {
-
+	#if defined(__amigaos4__)
 		&video_out_comp_yuv2,
 		&video_out_comp_yuv,
-&video_out_amiga,
+		&video_out_amiga,
 		&video_out_p96_pip,
 		&video_out_comp,
 		&video_out_cgx_wpa,
 		&video_out_pip,
+	#endif
+	#if defined(__MORPHOS__) && !defined(__AROS__)
+		#ifdef CONFIG_GUI
+	 		&video_out_cgx_overlay_gui,
+		#endif
+			&video_out_cgx_overlay,
+			&video_out_cgx_wpa,
+			&video_out_cgx_vmem,
+		#endif
+		#if defined(__AROS__)
+			&video_out_cgx_wpa,
+		#endif
 
 #ifdef CONFIG_XVR100
         &video_out_xvr100,
