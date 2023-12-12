@@ -23,8 +23,8 @@
 
 #include "config.h"
 
-//#define HAVE_TERMCAP
-#if !defined(__OS2__) && !defined(__MORPHOS__) && !defined(__AMIGAOS4__)
+// #define HAVE_TERMCAP
+#if !defined(__OS2__) && !defined(__MORPHOS__) && !defined(__AMIGAOS4__) && !defined(__AROS__)
 #define CONFIG_IOCTL
 #endif
 
