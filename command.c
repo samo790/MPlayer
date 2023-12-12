@@ -17,7 +17,7 @@
  */
 
 #ifdef __amigaos4__
-//markus
+// markus
 extern long arexx_gui;
 //
 #include <proto/dos.h>
@@ -84,11 +84,15 @@ extern void set_arexx_result(long v) ;
 #include "libavutil/avstring.h"
 #include "edl.h"
 
+#if defined(__MORPHOS__) || defined(__AROS__)
+#include <proto/dos.h>
+#endif
+
 #define IS_STREAMTYPE(t) (mpctx->stream && mpctx->stream->type == STREAMTYPE_##t)
 
 static void rescale_input_coordinates(int ix, int iy, double *dx, double *dy)
 {
-    //remove the borders, if any, and rescale to the range [0,1],[0,1]
+    // remove the borders, if any, and rescale to the range [0,1],[0,1]
     int w = vo_dwidth, h = vo_dheight;
     if (aspect_scaling()) {
         aspect(&w, &h, A_WINZOOM);
@@ -599,7 +603,7 @@ static int mp_property_angle(m_option_t *prop, int action, void *arg,
             step = 1;
         step *= (action == M_PROPERTY_STEP_UP ? 1 : -1);
         angle += step;
-        if (angle < 1) //cycle
+        if (angle < 1) // cycle
             angle = angles;
         else if (angle > angles)
             angle = 1;
@@ -655,7 +659,7 @@ static int mp_property_pause(m_option_t *prop, int action, void *arg,
     return m_property_flag_ro(prop, action, arg, mpctx->osd_function == OSD_PAUSE);
 }
 
-//markus
+// markus
 static int mp_property_pause_space(m_option_t *prop, int action, void *arg,
                              MPContext *mpctx)
 {
@@ -962,6 +966,20 @@ static int mp_property_audio(m_option_t *prop, int action, void *arg,
                 reinit_audio_chain();
             }
         }
+        mp_msg(MSGT_IDENTIFY, MSGL_INFO, "ID_AUDIO_TRACK=%d\n", audio_id);
+        return M_PROPERTY_OK;
+    default:
+        return M_PROPERTY_NOT_IMPLEMENTED;
+    }
+
+}
+
+#if defined(__MORPHOS__) || defined(__AROS__) 
+#ifdef CONFIG_GUI
+		if (use_gui)
+			gui(GUI_RUN_COMMAND, (void *) MP_CMD_GUI_UPDATEAUDIO);
+#endif
+#endif
         mp_msg(MSGT_IDENTIFY, MSGL_INFO, "ID_AUDIO_TRACK=%d\n", audio_id);
         return M_PROPERTY_OK;
     default:
@@ -2082,7 +2100,7 @@ static int mp_property_teletext_page(m_option_t *prop, int action, void *arg,
     switch(action){
     case M_PROPERTY_STEP_UP:
     case M_PROPERTY_STEP_DOWN:
-        //This should be handled separately
+        // This should be handled separately
         val = (arg ? *(int *) arg : 1) * (action == M_PROPERTY_STEP_DOWN ? -1 : 1);
         result=teletext_control(mpctx->demuxer->teletext,
                                 TV_VBI_CONTROL_STEP_PAGE, &val);
@@ -2140,7 +2158,7 @@ static const m_option_t mp_properties[] = {
      0, 0, 0, NULL },
     { "pause", mp_property_pause, CONF_TYPE_FLAG,
      M_OPT_RANGE, 0, 1, NULL },
-//markus
+// markus
     { "pause_space", mp_property_pause_space, CONF_TYPE_FLAG,
      M_OPT_RANGE, 0, 1, NULL },
 //
@@ -2408,7 +2426,7 @@ static int set_property_command(MPContext *mpctx, mp_cmd_t *cmd)
             r = mp_property_do(pname, M_PROPERTY_STEP_DOWN, NULL, mpctx);
         else
             r = mp_property_do(pname, M_PROPERTY_STEP_UP, NULL, mpctx);
-    } else if (cmd->args[1].v.i)        //set
+    } else if (cmd->args[1].v.i)        // set
         r = mp_property_do(pname, M_PROPERTY_SET, &cmd->args[0].v, mpctx);
     else                        // adjust
         r = mp_property_do(pname, M_PROPERTY_STEP_UP, &cmd->args[0].v, mpctx);
@@ -2779,14 +2797,14 @@ int run_command(MPContext *mpctx, mp_cmd_t *cmd)
             } break;
 
         case MP_CMD_FRAME_STEP:
-//markus
+// markus
         case MP_CMD_PAUSE_SPACE:{
              if (arexx_gui==FALSE) {
                cmd->pausing = 1;
                brk_cmd = 1;
              }
            } break;
-//end markus
+// end markus
         case MP_CMD_PAUSE:{
              cmd->pausing = 1;
              brk_cmd = 1;
@@ -3091,7 +3109,7 @@ int run_command(MPContext *mpctx, mp_cmd_t *cmd)
                     if (tv_channel_list) {
                         set_osd_msg(OSD_MSG_TV_CHANNEL, 1, osd_duration,
                                     MSGTR_OSDChannel, tv_channel_current->name);
-                        //vo_osd_changed(OSDTYPE_SUBTITLE);
+                        // vo_osd_changed(OSDTYPE_SUBTITLE);
                     }
                 }
 #ifdef CONFIG_PVR
@@ -3128,7 +3146,7 @@ int run_command(MPContext *mpctx, mp_cmd_t *cmd)
                 if (tv_channel_list) {
                     set_osd_msg(OSD_MSG_TV_CHANNEL, 1, osd_duration,
                                 MSGTR_OSDChannel, tv_channel_current->name);
-                    //vo_osd_changed(OSDTYPE_SUBTITLE);
+                    // vo_osd_changed(OSDTYPE_SUBTITLE);
                 }
             }
 #ifdef CONFIG_PVR
@@ -3159,7 +3177,7 @@ int run_command(MPContext *mpctx, mp_cmd_t *cmd)
                 if (tv_channel_list) {
                     set_osd_msg(OSD_MSG_TV_CHANNEL, 1, osd_duration,
                                 MSGTR_OSDChannel, tv_channel_current->name);
-                    //vo_osd_changed(OSDTYPE_SUBTITLE);
+                    // vo_osd_changed(OSDTYPE_SUBTITLE);
                 }
             }
 #ifdef CONFIG_PVR
@@ -3209,6 +3227,13 @@ int run_command(MPContext *mpctx, mp_cmd_t *cmd)
                     mpctx->sub_counts[SUB_SOURCE_SUBS]++;
                     ++mpctx->global_sub_size;
                 }
+#if defined(__MORPHOS__) || defined(__AROS__)
+#ifdef CONFIG_GUI
+				if (use_gui)
+					gui(GUI_RUN_COMMAND, (void *) MP_CMD_GUI_UPDATESUBTITLE);
+#endif
+#endif
+
             }
             break;
 
@@ -3220,6 +3245,13 @@ int run_command(MPContext *mpctx, mp_cmd_t *cmd)
                 } else if (v < mpctx->set_of_sub_size) {
                     remove_subtitle_range(mpctx, v, 1);
                 }
+#if defined(__MORPHOS__) || defined(__AROS__)
+#ifdef CONFIG_GUI
+				if (use_gui)
+					gui(GUI_RUN_COMMAND, (void *) MP_CMD_GUI_UPDATESUBTITLE);
+#endif
+#endif
+
             }
             break;
 
@@ -3404,7 +3436,11 @@ int run_command(MPContext *mpctx, mp_cmd_t *cmd)
             break;
 
         case MP_CMD_RUN:
-#if !defined(__MINGW32__) && !defined(__AMIGAOS4__)
+#if defined(__MORPHOS__) || defined(__AROS__)
+		mp_msg(MSGT_GLOBAL, MSGL_INFO, "Executing <%s>\n", cmd->args[0].v.s);
+		Execute(cmd->args[0].v.s, NULL, Output());
+
+#elif !defined(__MINGW32__) && !defined(__AMIGAOS4__)
             if (!fork()) {
                 char *exp_cmd = property_expand_string(mpctx, cmd->args[0].v.s);
                 if (exp_cmd) {

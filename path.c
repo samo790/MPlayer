@@ -40,6 +40,8 @@
 #elif defined(__CYGWIN__)
 #include <windows.h>
 #include <sys/cygwin.h>
+#elif defined(__MORPHOS__) || defined(__AROS__)
+#include <proto/dos.h>
 #endif
 
 #include "osdep/osdep.h"
@@ -54,6 +56,12 @@ char *get_path(const char *filename){
 #else
 	const char *config_dir = "/conf";
 #endif
+#ifdef defined(__MORPHOS__) || defined(__AROS__)
+	static char * const config_dir = "conf";
+	homedir = "PROGDIR:";
+#else
+	static char *config_dir = "/.mplayer";
+#endif
 	int len;
 #ifdef CONFIG_MACOSX_BUNDLE
 	struct stat dummy;
@@ -63,7 +71,11 @@ char *get_path(const char *filename){
 	char *res_url_path = NULL;
 	char *bdl_url_path = NULL;
 #endif
-
+#if !defined(__MORPHOS__) && !defined(__AROS__)
+	if ((homedir = getenv("MPLAYER_HOME")) != NULL)
+		config_dir = "";
+	else if ((homedir = getenv("HOME")) == NULL)
+#endif
 	if ((homedir = "/PROGDIR") == NULL)
 	{
 #if !defined(__MINGW32__) && !defined(__CYGWIN__) && !defined(__OS2__)
@@ -170,6 +182,10 @@ void set_path_env(void)
 }
 #endif /* (defined(__MINGW32__) || defined(__CYGWIN__)) && defined(CONFIG_WIN32DLL) */
 
+#if defined(__MORPHOS__) || defined(__AROS__)
+#define BINARY_CODECS_PATH "PROGDIR:"
+#endif
+
 char *codec_path = BINARY_CODECS_PATH;
 
 /**
@@ -179,7 +195,7 @@ const char *mp_basename(const char *path)
 {
     char *s;
 
-#if HAVE_DOS_PATHS
+#if HAVE_DOS_PATHS || defined(__MORPHOS__) || defined(__AROS__)
     s = strrchr(path, '\\');
     if (s)
         path = s + 1;
@@ -206,7 +222,15 @@ char *mp_dirname(const char *path)
     char *dirname;
 
     if (len == 0)
+	{
+#if defined(__MORPHOS__) || defined(__AROS__)
+		char currentdir[1024];
+		GetCurrentDirName(currentdir, sizeof(currentdir));
+		return strdup(currentdir);
+#else
         return strdup("./");
+#endif
+	}
     dirname = malloc(len + 1);
     if (!dirname)
         return NULL;
@@ -229,6 +253,27 @@ char *mp_dirname(const char *path)
  */
 char *mp_path_join(const char *base, const char *path)
 {
+#if defined(__MORPHOS__) || defined(__AROS__)
+	char *ret, *tmp;
+	int len;
+
+	if(strstr(path, ":"))
+		return strdup(path);
+
+    ret = mp_dirname(base);
+    if (!ret)
+        return NULL;
+
+	len = strlen(ret) + strlen(path) + 2;
+	tmp = realloc(ret, len);
+    if (!tmp) {
+        free(ret);
+        return NULL;
+    }
+    ret = tmp;
+	AddPart(ret, path, len);
+    return ret;
+#else
     char *ret, *tmp;
 
 #if HAVE_DOS_PATHS
@@ -260,6 +305,17 @@ char *mp_path_join(const char *base, const char *path)
  */
 char *mp_dir_join(const char *dir, const char *append)
 {
+#if defined(__MORPHOS__) || defined(__AROS__)
+    char *tmp, *ret;
+    size_t dirlen = strlen(dir);
+    size_t i      = dirlen - 1;
+
+	if(dirlen == 0 || strstr(dir, ":"))
+		return mp_path_join(dir, append);
+
+	ret = mp_path_join(dir, append);
+    return ret;
+#else
     char *tmp, *ret;
     size_t dirlen = strlen(dir);
     size_t i      = dirlen - 1;

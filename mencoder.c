@@ -16,6 +16,12 @@
  * 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
  */
 
+#if defined(__MORPHOS__) || defined(__AROS__)
+#include "morphos_stuff.h"
+#include <proto/dos.h>
+#include <dos/dos.h>
+#endif
+
 #define VCODEC_COPY 0
 #define VCODEC_FRAMENO 1
 // real codecs:
@@ -103,6 +109,12 @@
 int vo_doublebuffering=0;
 int vo_directrendering=0;
 int vo_config_count=1;
+
+#if defined(__MORPHOS__) || defined(__AROS__)
+extern int altivec_disabled;
+APTR OldWinPtr;
+struct Process *MyProcess;
+#endif
 
 //--------------------------
 
@@ -252,6 +264,10 @@ static void mencoder_exit(int level, const char *how)
 	mp_msg(MSGT_MENCODER, MSGL_INFO, MSGTR_ExitingHow, how);
     else
 	mp_msg(MSGT_MENCODER, MSGL_INFO, MSGTR_Exiting);
+
+#if defined(__MORPHOS__) || defined(__AROS__)
+	MorphOS_Close();
+#endif
 
     exit(level);
 }
@@ -584,6 +600,12 @@ audio_encoding_params_t aparams;
 audio_encoder_t *aencoder = NULL;
 
 user_correct_pts = 0;
+
+#if defined(__MORPHOS__) || defined(__AROS__)
+	// see morphos_stuff.c
+	MyProcess = (struct Process *)FindTask(NULL);
+	if (MorphOS_Open(argc, argv) < 0) mencoder_exit(1, NULL);
+#endif
 
   common_preinit(&argc, &argv);
 

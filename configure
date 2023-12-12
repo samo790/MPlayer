@@ -214,6 +214,8 @@ issystem() {
 }
 aix()       { issystem "AIX"; }
 amigaos()   { issystem "AmigaOS"; }
+aros()      { issystem "AROS"; }
+axrt()      { issystem "AxRT"; }
 bsdos()     { issystem "BSD/OS"; }
 cygwin()    { issystem "CYGWIN"; }
 darwin()    { issystem "Darwin"; }
@@ -1812,7 +1814,7 @@ if test -z "$_target" ; then
   # OS name
   system_name=$(uname -s 2>&1)
   case "$system_name" in
-  Linux|FreeBSD|NetBSD|OpenBSD|DragonFly|BSD/OS|Darwin|SunOS|QNX|GNU|MorphOS|AIX|AmigaOS|Haiku)
+  Linux|FreeBSD|NetBSD|OpenBSD|DragonFly|BSD/OS|Darwin|SunOS|QNX|GNU|MorphOS|AIX|AROS|AmigaOS|Haiku)
     ;;
   IRIX*)
     system_name=IRIX
@@ -1881,6 +1883,8 @@ else # if test -z "$_target"
       amigaos) system_name=AmigaOS ;;
       mingw32*) system_name=MINGW32 ;;
       wine) system_name=Wine ;;
+      aros) system_name=AROS ;;
+      axrt) system_name=AxRT ;;
     esac
   done
   # We need to convert underscores so that values like k6-2 and pentium-mmx can be passed
@@ -6428,11 +6432,14 @@ elif sunos ; then
   test $(uname -r | sed 's/^5\.//') -gt 10 && default_cdrom_device="/cdrom/cdrom0"
 elif amigaos ; then
   default_cdrom_device="a1ide.device:2"
+elif aros || axrt ; then
+  default_cdrom_device="ata.device:2"
 else
   default_cdrom_device="/dev/cdrom"
 fi
 
-if win32 || os2 || dragonfly || freebsd || openbsd || sunos || amigaos ; then
+
+if win32 || os2 || dragonfly || freebsd || openbsd || sunos || amigaos || aros || axrt ; then
   default_dvd_device=$default_cdrom_device
 elif darwin ; then
   default_dvd_device="/dev/rdiskN"
@@ -6486,6 +6493,10 @@ if test "$_dvdread" = auto ; then
       _dvdread=yes
       extra_cflags="$extra_cflags $_dvdreadcflags"
       extra_ldflags="$extra_ldflags $_dvdreadlibs"
+  elif aros || axrt ; then
+    _dvdread_internal=yes
+    _dvdread=yes
+    extra_cflags="-Ilibdvdread4 $extra_cflags"
     fi
 fi
 
@@ -6593,6 +6604,8 @@ else
 fi
 echores "$_bitmap_font"
 
+if aros || axrt ; then
+#FreeType AROS check
 
 echocheck "freetype >= 2.0.9"
 
@@ -8163,8 +8176,11 @@ if test "$_gui" = yes ; then
     esac
   test "$_freetype" = no && test "$_bitmap_font" = no &&
     die "The GUI requires either FreeType or bitmap font support."
-
-  if ! win32 ; then
+if aros || axrt ; then
+  _gui_mui=yes
+  libs_mplayer="$libs_mplayer -lmui"
+  def_gui='#define CONFIG_GUI 1'
+elif ! win32 ; then
     _gui_gtk=yes
     test "$_x11" != yes && die "The GUI requires X11."
 
@@ -8726,10 +8742,12 @@ VSSCANF      = $vsscanf
 # features
 3DFX = $_3dfx
 AA = $_aa
+AHI_DEV = $_ahi_dev
 ALSA = $_alsa
 APPLE_IR = $_apple_ir
 APPLE_REMOTE = $_apple_remote
 ARTS = $_arts
+AROS_COMMON = $_aros_common
 AUDIO_INPUT = $_audio_input
 BITMAP_FONT = $_bitmap_font
 BL = $_bl

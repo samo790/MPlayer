@@ -73,7 +73,7 @@
 #ifdef __amigaos4__
 // #include "amigaos/debug.h"
 #include "amigaos/amigaos_stuff.h"
-//markus
+// markus
 extern long arexx_gui;
 // #include "./amigaos/arexx.h"
 //
@@ -731,7 +731,7 @@ void exit_player_with_rc(enum exit_reason how, int rc)
 #ifdef __amigaos4__
     // AmigaOS_Close(); // changed to 'atexit(AmigaOS_Close);' before AmigaOS_Open()
     SDL_Quit();
-//printf("SDL_Quit()\n");
+// printf("SDL_Quit()\n");
 #endif
 
     if (mpctx->playtree_iter)
@@ -777,7 +777,7 @@ void exit_player(enum exit_reason how)
     exit_player_with_rc(how, 1);
 }
 
-#if !defined(__MINGW32__) && !defined(__AMIGAOS4__)
+#if !defined(__MINGW32__) && !defined(__AMIGAOS4__) && !defined(__MORPHOS__) && !defined(__AROS__)
 static void child_sighandler(int x)
 {
     pid_t pid;
@@ -3090,7 +3090,7 @@ int main(int argc, char *argv[])
     current_module     = NULL;
 
     // Catch signals
-#if !defined(__MINGW32__) && !defined(__amigaos4__)
+#if !defined(__MINGW32__) && !defined(__amigaos4__) && !defined(__MORPHOS__) && !defined(__AROS__)
     // TODO: use newer POSIX SIG_IGN behaviour instead to
     // automatically handle children?
     signal(SIGCHLD, child_sighandler);

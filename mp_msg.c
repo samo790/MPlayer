@@ -30,6 +30,10 @@
 #include <errno.h>
 #endif
 
+#if defined(__MORPHOS__) || defined(__AROS__)
+#include "morphos_stuff.h"
+#endif
+
 #include "mp_msg.h"
 
 /* maximum message length of mp_msg */

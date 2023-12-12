@@ -53,6 +53,9 @@
 #include "libpostproc/postprocess.h"
 #endif
 
+#if defined(__MORPHOS__) || defined(__AROS__)
+extern int cache_network;
+#endif
 
 #ifdef CONFIG_RADIO
 const m_option_t radioopts_conf[]={
@@ -321,6 +324,9 @@ const m_option_t common_opts[] = {
     {"nocache", &stream_cache_size, CONF_TYPE_FLAG, 0, 1, 0, NULL},
     {"cache-min", &stream_cache_min_percent, CONF_TYPE_FLOAT, CONF_RANGE, 0, 99, NULL},
     {"cache-seek-min", &stream_cache_seek_min_percent, CONF_TYPE_FLOAT, CONF_RANGE, 0, 99, NULL},
+#if defined(__MORPHOS__) || defined(__AROS__)
+	{"cachenetwork", &cache_network, CONF_TYPE_FLAG, 0, 1, 0, NULL},
+#endif
 #else
     {"cache", "MPlayer was compiled without cache2 support.\n", CONF_TYPE_PRINT, CONF_NOCFG, 0, 0, NULL},
 #endif /* CONFIG_STREAM_CACHE */
@@ -638,7 +644,13 @@ const m_option_t common_opts[] = {
     {"fontconfig", "MPlayer was compiled without fontconfig support.\n", CONF_TYPE_PRINT, CONF_NOCFG, 0, 0, NULL},
     {"nofontconfig", "MPlayer was compiled without fontconfig support.\n", CONF_TYPE_PRINT, CONF_NOCFG, 0, 0, NULL},
 #endif /* CONFIG_FONTCONFIG */
+
+#if defined(__MORPHOS__)
+ 	{"noaltivec", &altivec_disabled, CONF_TYPE_FLAG, 0, 0, 1, NULL},
+#endif
+
     {NULL, NULL, 0, 0, 0, 0, NULL}
+
 };
 
 #endif /* MPLAYER_CFG_COMMON_H */
