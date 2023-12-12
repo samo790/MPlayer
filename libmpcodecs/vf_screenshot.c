@@ -140,7 +140,7 @@ static void write_png(struct vf_priv_s *priv)
     av_packet_unref(pkt);
 
     fclose (fp);
-#if defined(__MORPHOS__) || defined(__amigaos4__)
+#if defined(__MORPHOS__) || defined(__amigaos4__) || defined(__AROS__)
     mp_msg(MSGT_VFILTER,MSGL_STATUS,"Saved screenshot to '%s'\n",priv->fname);
 #else
     mp_msg(MSGT_VFILTER,MSGL_INFO,"*** screenshot '%s' ***\n",priv->fname);
@@ -153,10 +153,15 @@ static int fexists(char *fname)
     return stat(fname, &dummy) == 0;
 }
 
+#if defined(__MORPHOS__) || defined(__AROS__)
+extern char * filename;
+#include <proto/dos.h>
+#endif
+
 static void gen_fname(struct vf_priv_s* priv)
 {
     do {
-#if defined(__MORPHOS__) || defined(__amigaos4__)
+#if defined(__MORPHOS__) || defined(__amigaos4__) || defined(__AROS__)
 		char buf[sizeof(priv->fname) - 13];
 		#ifndef __amigaos4__
 			stccpy(buf, FilePart(filename), sizeof(buf));
