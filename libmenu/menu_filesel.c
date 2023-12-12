@@ -28,8 +28,11 @@
 #include <unistd.h>
 #include <limits.h>
 
-#include "libavutil/attributes.h"
-#include "libavutil/avstring.h"
+#if defined(__MORPHOS__) || defined(__AROS__)
+#include <dos/dos.h>
+#include <dos/dosextens.h>
+#include <proto/dos.h>
+#endif
 
 #include "config.h"
 #include "mp_msg.h"
@@ -48,7 +51,7 @@
 #include "input/input.h"
 #include "osdep/keycodes.h"
 
-#define MENU_KEEP_PATH "/tmp/mp_current_path"
+#define MENU_KEEP_PATH "PROGDIR:conf/menu_currentpath"
 
 int menu_keepdir = 0;
 char *menu_chroot = NULL;
@@ -70,7 +73,7 @@ struct menu_priv_s {
   char* filter;
 };
 
-static const struct menu_priv_s cfg_dflt = {
+static struct menu_priv_s cfg_dflt = {
   MENU_LIST_PRIV_DFLT,
   NULL,
 
@@ -141,16 +144,19 @@ static char* replace_path(char* title , char* dir , int escape) {
     return title;
 }
 
+typedef int (*kill_warn)(const void*, const void*);
+
 static int mylstat(char *dir, char *file,struct stat* st) {
-  int res;
-  char *s = av_asprintf("%s/%s",dir,file);
-  int l = strlen(s);
-  if (!strcmp("..", file)) {
+  int l = strlen(dir) + strlen(file);
+  char s[l+2];
+  if (!strcmp("../", file)) {
     char *slash;
     l -= 3;
-    s[l+1] = 0;
+    strcpy(s, dir);
 #if HAVE_DOS_PATHS
     if (s[l] == '/' || s[l] == '\\')
+#elif defined(__MORPHOS__) || defined(__AROS__)
+	if (s[l] == '/' || s[l] == ':')
 #else
     if (s[l] == '/')
 #endif
@@ -159,28 +165,48 @@ static int mylstat(char *dir, char *file,struct stat* st) {
 #if HAVE_DOS_PATHS
     if (!slash)
       slash = strrchr(s,'\\');
+#elif defined(__MORPHOS__) || defined(__AROS__)
+    if (!slash)
+	  slash = strrchr(s,':');
 #endif
-    if (slash)
-      slash[1] = '\0';
+    if (!slash)
+      return stat(dir,st);
+    slash[1] = '\0';
+    return stat(s,st);
   }
-  res = stat(s,st);
-  av_freep(&s);
-  return res;
+
+#if defined(__MORPHOS__) || defined(__AROS__)
+  strcpy(s, dir);
+  AddPart(s, file, sizeof(s));
+#else
+  sprintf(s,"%s/%s",dir,file);
+#endif
+  return stat(s,st);
 }
 
-static int compare(const void *av, const void *bv){
-  const char * const *a = av;
-  const char * const *b = bv;
-  if((*a)[strlen(*a) - 1] == '/') {
-    if((*b)[strlen(*b) - 1] == '/')
-      return strcmp(*b, *a) ;
-    else
-      return 1;
-  } else {
-    if((*b)[strlen(*b) - 1] == '/')
-      return -1;
-    else
-      return strcmp(*b, *a);
+// __MORPHOS__
+static int compare(char **a, char **b){
+  if(strcmp(a, "../") == 0)
+  {
+	return 1;
+  }
+  else if(strcmp(b, "../") == 0)
+  {
+	return -1;
+  }
+  else
+  {
+    if((*a)[strlen(*a) - 1] == '/' || (*a)[strlen(*a) - 1] == ':') {
+	  if((*b)[strlen(*b) - 1] == '/' || (*b)[strlen(*b) - 1] == ':')
+        return strcmp(*b, *a) ;
+      else
+        return 1;
+    } else {
+	  if((*b)[strlen(*b) - 1] == '/' || (*b)[strlen(*b) - 1] == ':')
+        return -1;
+      else
+        return strcmp(*b, *a);
+    }
   }
 }
 
@@ -242,6 +268,7 @@ static int open_dir(menu_t* menu,char* args) {
   menu_list_init(menu);
 
   free(mpriv->dir);
+
   mpriv->dir = strdup(args);
   if(mpriv->p.title && mpriv->p.title != mpriv->title && mpriv->p.title != cfg_dflt.p.title)
     free(mpriv->p.title);
@@ -265,15 +292,22 @@ static int open_dir(menu_t* menu,char* args) {
   extensions = get_extensions(menu);
 
   n=0;
+
+  namelist[n++] = strdup("../"); // __MORPHOS__
+
   while ((dp = readdir(dirp)) != NULL) {
-    if(dp->d_name[0] == '.' && strcmp(dp->d_name,"..") != 0)
+	if(dp->d_name[0] == '.' && strcmp(dp->d_name,"../") != 0)
       continue;
+
+#if !defined(__MORPHOS__) && !defined(__AROS__)
     if (menu_chroot && !strcmp (dp->d_name,"..")) {
       size_t len = strlen (menu_chroot);
       if ((strlen (mpriv->dir) == len || strlen (mpriv->dir) == len + 1)
           && !strncmp (mpriv->dir, menu_chroot, len))
         continue;
     }
+#endif
+
     if (mylstat(args,dp->d_name,&st))
       continue;
     if (file_filter && extensions && !S_ISDIR(st.st_mode)) {
@@ -282,13 +316,13 @@ static int open_dir(menu_t* menu,char* args) {
       ext++;
       elem = extensions;
       do {
-        if (!av_strcasecmp(ext, *elem))
+        if (!strcasecmp(ext, *elem))
           break;
       } while (*++elem);
       if (*elem == NULL)
         continue;
     }
-    if(n%20 == 0){ // Get some more mem
+	if(n%20 == 1){ // Get some more mem  __MORPHOS__
       if((tp = realloc(namelist, (n+20) * sizeof (char *)))
          == NULL) {
         mp_msg(MSGT_GLOBAL,MSGL_ERR,MSGTR_LIBMENU_ReallocError, strerror(errno));
@@ -298,7 +332,7 @@ static int open_dir(menu_t* menu,char* args) {
       namelist=tp;
     }
 
-    namelist[n] = malloc(strlen(dp->d_name) + 2);
+	namelist[n] = (char *) malloc(strlen(dp->d_name) + 2);
     if(namelist[n] == NULL){
       mp_msg(MSGT_GLOBAL,MSGL_ERR,MSGTR_LIBMENU_MallocError, strerror(errno));
       n--;
@@ -315,17 +349,17 @@ bailout:
   free_extensions (extensions);
   closedir(dirp);
 
+  qsort(namelist, n, sizeof(char *), (kill_warn)compare);
+
   if (n < 0) {
     mp_msg(MSGT_GLOBAL,MSGL_ERR,MSGTR_LIBMENU_ReaddirError,strerror(errno));
-    free(namelist);
     return 0;
   }
-  qsort(namelist, n, sizeof(char *), compare);
   while(n--) {
     if((e = calloc(1,sizeof(list_entry_t))) != NULL){
     e->p.next = NULL;
     e->p.txt = strdup(namelist[n]);
-    if(strchr(namelist[n], '/') != NULL)
+	if(strchr(namelist[n], '/') != NULL)
       e->d = 1;
     menu_list_add_entry(menu,e);
     }else{
@@ -338,6 +372,113 @@ bailout:
   return 1;
 }
 
+int get_root(menu_t* menu)
+{
+	struct DosList *dosList;
+	CONST ULONG lockDosListFlags = LDF_READ | LDF_VOLUMES;
+	char name[256];
+	list_entry_t* e;
+	char **namelist, **tp;
+	int n = 0;
+	char * p;
+
+	menu_list_init(menu);
+
+	if(mpriv->dir)
+	{
+		p = malloc(strlen(mpriv->dir) + 2);
+		if(p)
+		{
+			strcpy(p, mpriv->dir);
+			strcat(p, ":");
+			free(mpriv->dir);
+			mpriv->dir = p;
+		}
+	}
+
+	if(mpriv->p.title && mpriv->p.title != mpriv->title && mpriv->p.title != cfg_dflt.p.title)
+		free(mpriv->p.title);
+	mpriv->p.title = replace_path(mpriv->title,mpriv->dir,0);
+
+	dosList = LockDosList(lockDosListFlags);
+	if (dosList == NULL)
+	{
+		return 0;
+	}
+
+	namelist = (char **) malloc(sizeof(char *));
+
+	dosList = NextDosEntry(dosList, LDF_VOLUMES);
+	while (dosList)
+	{
+		if (dosList->dol_Type == DLT_VOLUME &&	// Should always be true, but ...
+			 dosList->dol_Name &&				// Same here
+			 dosList->dol_Task					// Will be NULL if volume is removed from drive but still in use by some program
+			)
+		{
+			CONST_STRPTR volume_name = (CONST_STRPTR)BADDR(dosList->dol_Name)+1;
+//			  CONST_STRPTR device_name = (CONST_STRPTR)((struct Task *)dosList->dol_Task->mp_SigTask)->tc_Node.ln_Name;
+			BPTR volume_lock;
+
+			strcpy(name, volume_name);
+			strcat(name, ":");
+			volume_lock = Lock(name, SHARED_LOCK);
+			if (volume_lock)
+			{
+				if(n%20 == 0)
+				{
+					if(!(tp = (char **) realloc(namelist, (n+20) * sizeof (char *))))
+					{
+						mp_msg(MSGT_GLOBAL,MSGL_ERR,MSGTR_LIBMENU_ReallocError, strerror(errno));
+						n--;
+						break;
+					}
+					else
+					{
+						namelist=tp;
+					}
+			    }
+
+				namelist[n] = strdup(name);
+				n++;
+
+				UnLock(volume_lock);
+			}
+		}
+		dosList = NextDosEntry(dosList, LDF_VOLUMES);
+	}
+
+	UnLockDosList(lockDosListFlags);
+
+	qsort(namelist, n, sizeof(char *), (kill_warn)compare);
+
+	if (n < 0)
+	{
+		mp_msg(MSGT_GLOBAL,MSGL_ERR,MSGTR_LIBMENU_ReaddirError,strerror(errno));
+		return 0;
+	}
+
+	while(n--)
+	{
+		if((e = calloc(1,sizeof(list_entry_t))) != NULL)
+		{
+			e->p.next = NULL;
+			e->p.txt = strdup(namelist[n]);
+			e->d = 1;
+			menu_list_add_entry(menu,e);
+		}
+		else
+		{
+			mp_msg(MSGT_GLOBAL,MSGL_ERR,MSGTR_LIBMENU_MallocError, strerror(errno));
+		}
+		free(namelist[n]);
+	}
+	free(namelist);
+
+	return 1;
+}
+
+
 static char *action;
 
 static void read_cmd(menu_t* menu,int cmd) {
@@ -347,25 +488,45 @@ static void read_cmd(menu_t* menu,int cmd) {
   case MENU_CMD_RIGHT:
   case MENU_CMD_OK: {
     // Directory
-    if(mpriv->p.current->d && !mpriv->dir_action) {
+	if(mpriv->p.current->d && !mpriv->dir_action) {
         // Default action : open this dirctory ourself
 	int l = strlen(mpriv->dir);
 	char *slash =  NULL, *p = NULL;
+
 	if(strcmp(mpriv->p.current->p.txt,"../") == 0) {
+//#if !defined(__MORPHOS__) #ifndef __MORPHOS__#ifndef __MORPHOS__ !defined(__AROS__)
 	  if(l <= 1) break;
 	  mpriv->dir[l-1] = '\0';
+//#endif
 	  slash = strrchr(mpriv->dir,'/');
 #if HAVE_DOS_PATHS
 	  if (!slash)
 	    slash = strrchr(mpriv->dir,'\\');
+#elif defined(__MORPHOS__) || defined(__AROS__)
+	  if (!slash)
+		slash = strrchr(mpriv->dir,':');
 #endif
-	  if(!slash) break;
+	  if(!slash)
+	  {
+		menu_list_uninit(menu,free_entry);
+		if(!get_root(menu))
+		{	 
+			menu->cl = 1;
+		}
+		break;
+	  }
 	  slash[1] = '\0';
 	  p = strdup(mpriv->dir);
 	} else {
-	  p = malloc(l + strlen(mpriv->p.current->p.txt) + 1);
+	  p = malloc(l + strlen(mpriv->p.current->p.txt) + 2);
+#if defined(__MORPHOS__) || defined(__AROS__)
+	  strcpy(p, mpriv->dir);
+	  AddPart(p, mpriv->p.current->p.txt, l + strlen(mpriv->p.current->p.txt) + 2);
+#else
 	  sprintf(p,"%s%s",mpriv->dir,mpriv->p.current->p.txt);
+#endif
 	}
+
 	menu_list_uninit(menu,free_entry);
 	if(!open_dir(menu,p)) {
 	  mp_msg(MSGT_GLOBAL,MSGL_ERR,MSGTR_LIBMENU_CantOpenDirectory,p);
@@ -373,22 +534,36 @@ static void read_cmd(menu_t* menu,int cmd) {
 	}
 	free(p);
     } else { // File and directory dealt with action string.
+	  int fname_len = strlen(mpriv->dir) + strlen(mpriv->p.current->p.txt) + 2;
+      char filename[fname_len];
+      char *str;
       char *action = mpriv->p.current->d ? mpriv->dir_action:mpriv->file_action;
-      char *filename = av_asprintf("%s%s",mpriv->dir,mpriv->p.current->p.txt);
-      char *str = replace_path(action, filename,1);
+#if defined(__MORPHOS__) || defined(__AROS__)
+	  strcpy(filename, mpriv->dir);
+	  AddPart(filename, mpriv->p.current->p.txt, fname_len);
+#else
+	  sprintf(filename,"%s%s",mpriv->dir,mpriv->p.current->p.txt);
+#endif
+      str = replace_path(action, filename,1);
       mp_input_parse_and_queue_cmds(str);
       if (str != action)
 	free(str);
-      av_freep(&filename);
     }
   } break;
   case MENU_CMD_ACTION: {
-    char *filename = av_asprintf("%s%s",mpriv->dir,mpriv->p.current->p.txt);
-    char *str = replace_path(action, filename,1);
+	int fname_len = strlen(mpriv->dir) + strlen(mpriv->p.current->p.txt) + 2;
+    char filename[fname_len];
+    char *str;
+#if defined(__MORPHOS__) || defined(__AROS__)
+	  strcpy(filename, mpriv->dir);
+	  AddPart(filename, mpriv->p.current->p.txt, fname_len);
+#else
+	  sprintf(filename,"%s%s",mpriv->dir,mpriv->p.current->p.txt);
+#endif
+    str = replace_path(action, filename,1);
     mp_input_parse_and_queue_cmds(str);
     if(str != action)
       free(str);
-    av_freep(&filename);
   } break;
   default:
     menu_list_read_cmd(menu,cmd);
@@ -413,10 +588,11 @@ static void clos(menu_t* menu) {
   free(mpriv->dir);
 }
 
-static int open_fs(menu_t* menu, char* av_unused args) {
+static int open_fs(menu_t* menu, char* args) {
   char *path = mpriv->path;
   int r = 0;
   char wd[PATH_MAX+1], b[PATH_MAX+1];
+  args = NULL; // Warning kill
 
   menu->draw = menu_list_draw;
   menu->read_cmd = read_cmd;
@@ -430,11 +606,15 @@ static int open_fs(menu_t* menu, char* av_unused args) {
 
       path_fp = open (MENU_KEEP_PATH, O_RDONLY);
       if (path_fp >= 0) {
-        if (!fstat (path_fp, &st) && (st.st_size > 0) && (st.st_size < sizeof(b))) {
-          path = b;
+        if (!fstat (path_fp, &st) && (st.st_size > 0)) {
+          path = malloc(st.st_size+1);
           path[st.st_size] = '\0';
-          if (!((read(path_fp, path, st.st_size) == st.st_size) && path[0] == '/'
-              && !stat(path, &st) && S_ISDIR(st.st_mode))) {
+		  if ((read(path_fp, path, st.st_size) == st.st_size)
+			  /*&& !stat(path, &st) && S_ISDIR(st.st_mode)*/){
+            path[st.st_size] = '\0';
+          }
+          else {
+            free(path);
             path = NULL;
           }
         }
@@ -444,6 +624,7 @@ static int open_fs(menu_t* menu, char* av_unused args) {
   }
 
   getcwd(wd,PATH_MAX);
+
   if (!path || path[0] == '\0') {
 #if 0
     char *slash = NULL;
@@ -459,15 +640,22 @@ static int open_fs(menu_t* menu, char* av_unused args) {
       slash[1] = '\0';
     else
 #endif
+      path = wd;
   }
-  else if (path[0] != '/') {
-    av_strlcat(wd, "/", sizeof(wd));
-    av_strlcat(wd, path, sizeof(wd));
+
+
+#if !defined(__MORPHOS__) && !defined(__AROS__)
+  if (path[0] != '/') {
+    if(path[strlen(path)-1] != '/')
+      snprintf(b,sizeof(b),"%s/%s/",wd,path);
+    else
+      snprintf(b,sizeof(b),"%s/%s",wd,path);
+    path = b;
+  } else if (path[strlen(path)-1]!='/') {
+    sprintf(b,"%s/",path);
+    path = b;
   }
-  if (!wd[0] || wd[strlen(wd)-1]!='/') {
-    av_strlcat(wd, "/", sizeof(wd));
-  }
-  path = wd;
+
   if (menu_chroot && menu_chroot[0] == '/') {
     int l = strlen(menu_chroot);
     if (l > 0 && menu_chroot[l-1] == '/')
@@ -476,18 +664,20 @@ static int open_fs(menu_t* menu, char* av_unused args) {
       if (menu_chroot[l] == '/')
         path = menu_chroot;
       else {
-        snprintf(b,sizeof(b),"%s/",menu_chroot);
+        sprintf(b,"%s/",menu_chroot);
         path = b;
       }
     }
   }
+#endif
+
   r = open_dir(menu,path);
 
   return r;
 }
 
 const menu_info_t menu_info_filesel = {
-  "File selector menu",
+  "File seletor menu",
   "filesel",
   "Albeu",
   "",

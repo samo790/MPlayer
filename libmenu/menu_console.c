@@ -38,7 +38,7 @@
 #include <unistd.h>
 #include <errno.h>
 
-#if defined(__MORPHOS__) || defined(__amigaos4__)
+#if defined(__MORPHOS__) || defined(__amigaos4__) || defined(__AROS__)
 #include <proto/dos.h>
 #endif
 
@@ -140,7 +140,57 @@ static const m_option_t cfg_fields[] = {
 
 #define mpriv (menu->priv)
 
-static void check_child(menu_t* menu);
+static void check_child(menu_t* menu) {
+#if !defined(__MINGW32__) && !defined(__MORPHOS__) && !defined(__AROS__)
+  fd_set rfd;
+  struct timeval tv;
+  int max_fd = mpriv->child_fd[2] > mpriv->child_fd[1] ? mpriv->child_fd[2] :
+    mpriv->child_fd[1];
+  int i,r,child_status,w;
+  char buffer[256];
+
+  if(!mpriv->child) return;
+
+  memset(&tv,0,sizeof(struct timeval));
+  FD_ZERO(&rfd);
+  FD_SET(mpriv->child_fd[1],&rfd);
+  FD_SET(mpriv->child_fd[2],&rfd);
+
+  r = select(max_fd+1,&rfd, NULL, NULL, &tv);
+  if(r == 0) {
+    r = waitpid(mpriv->child,&child_status,WNOHANG);
+    if(r < 0){
+      if(errno==ECHILD){  ///exiting children get handled in mplayer.c
+        for(i = 0 ; i < 3 ; i++)
+          close(mpriv->child_fd[i]);
+        mpriv->child = 0;
+        mpriv->prompt = mpriv->mp_prompt;
+        //add_line(mpriv,"Child process exited");
+      }
+      else mp_msg(MSGT_GLOBAL,MSGL_ERR,MSGTR_LIBMENU_WaitPidError,strerror(errno));
+    }
+  } else if(r < 0) {
+    mp_msg(MSGT_GLOBAL,MSGL_ERR,MSGTR_LIBMENU_SelectError);
+    return;
+  }
+
+  w = 0;
+  for(i = 1 ; i < 3 ; i++) {
+    if(FD_ISSET(mpriv->child_fd[i],&rfd)){
+      if(w) mpriv->add_line = 1;
+      r = read(mpriv->child_fd[i],buffer,255);
+      if(r < 0)
+	mp_msg(MSGT_GLOBAL,MSGL_ERR,MSGTR_LIBMENU_ReadErrorOnChildFD, i == 1 ? "stdout":"stderr");
+      else if(r>0) {
+	buffer[r] = '\0';
+	add_string(mpriv,buffer);
+      }
+      w = 1;
+    }
+  }
+#endif
+
+}
 
 static void add_line(struct menu_priv_s* priv, char* l) {
   char* eol = strchr(l,'\n');
@@ -309,7 +359,7 @@ printf("libmenu/menu_console.c - %s:%d\n",__FUNCTION__,__LINE__);
 #define close_pipe(pipe) close(pipe[0]); close(pipe[1])
 
 static int run_shell_cmd(menu_t* menu, char* cmd) {
-#if defined(__MORPHOS__) || defined(__amigaos4__)
+#if defined(__MORPHOS__) || defined(__amigaos4__) || defined(__AROS__)
   BPTR out;
 
   mp_msg(MSGT_GLOBAL,MSGL_INFO,MSGTR_LIBMENU_ConsoleRun,cmd);
@@ -447,6 +497,32 @@ static void read_cmd(menu_t* menu,int cmd) {
     c = mp_input_parse_cmd(mpriv->cur_history->buffer);
     enter_cmd(menu);
     if(!c)
+#if defined(__MORPHOS__) || defined(__AROS__)
+		char * ptr;
+		if((ptr=strchr(mpriv->cur_history->prev->buffer, ' ')))
+		{
+		  BPTR lock;
+		  char buffer[512];
+		  char command[256];
+		  strncpy(command, mpriv->cur_history->prev->buffer, ptr - mpriv->cur_history->prev->buffer);
+		  command[ptr - mpriv->cur_history->prev->buffer] = 0;
+
+		  lock = GetProgramDir();
+		  if(lock)
+		  {
+			char progdir[256];
+			if(NameFromLock(lock, progdir, sizeof(progdir)))
+			{
+				char script[256];
+				snprintf(script, sizeof(script), "conf/%s.rexx", command);
+				AddPart(progdir, script, sizeof(progdir));
+				snprintf(buffer, sizeof(buffer), "rx %s \"%s\"", progdir, ptr+1);
+				run_shell_cmd(menu, buffer);
+			}
+		  }
+		}
+		else
+#endif
       add_line(mpriv,"Invalid command try help");
     else {
       switch(c->id) {
@@ -455,6 +531,8 @@ static void read_cmd(menu_t* menu,int cmd) {
 	add_line(mpriv,"TODO: meaningful help message ;)");
 	add_line(mpriv,"Enter any slave command");
 	add_line(mpriv,"exit close this console");
+	// __ MORPHOS__ ok, just for fun
+	run_shell_cmd(menu, "run >nil: c:openurl http://www.mplayerhq.hu/DOCS/tech/slave.txt");
 	break;
       case MP_CMD_CEXIT:
 	menu->show = 0;
