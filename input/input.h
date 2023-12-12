@@ -167,6 +167,12 @@ typedef enum {
 
   /// GUI command
   MP_CMD_GUI,
+#if defined(__MORPHOS__) || defined(__AROS__)
+  MP_CMD_GUI_HIDE,
+  MP_CMD_GUI_UPDATESUBTITLE,
+  MP_CMD_GUI_UPDATEAUDIO,
+  MP_CMD_GUI_UPDATEVIDEO,
+#endif
 
 } mp_command_type;
 
