@@ -1,617 +1,618 @@
 /*
- * Copyright (c) 2007 The FFmpeg Project
+ * Network layer for MPlayer
  *
- * This file is part of FFmpeg.
+ * Copyright (C) 2001 Bertrand Baudet <bertrand_baudet@yahoo.com>
  *
- * FFmpeg is free software; you can redistribute it and/or
- * modify it under the terms of the GNU Lesser General Public
- * License as published by the Free Software Foundation; either
- * version 2.1 of the License, or (at your option) any later version.
+ * This file is part of MPlayer.
  *
- * FFmpeg is distributed in the hope that it will be useful,
+ * MPlayer is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation; either version 2 of the License, or
+ * (at your option) any later version.
+ *
+ * MPlayer is distributed in the hope that it will be useful,
  * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
- * Lesser General Public License for more details.
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
  *
- * You should have received a copy of the GNU Lesser General Public
- * License along with FFmpeg; if not, write to the Free Software
- * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA
+ * You should have received a copy of the GNU General Public License along
+ * with MPlayer; if not, write to the Free Software Foundation, Inc.,
+ * 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
  */
 
-#include "config_components.h"
+// #if defined(__MORPHOS__) || defined(__AROS__)
+// #include <proto/socket.h>
+// #include <proto/exec.h>
+// #include <exec/types.h>
+// #if !defined(__AROS__)
+// #include <amitcp/socketbasetags.h>
 
-#include <fcntl.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <unistd.h>
+#include <errno.h>
+#include <ctype.h>
+
+#include "config.h"
+
+#include "libavutil/avstring.h"
+#include "mp_msg.h"
+#include "help_mp.h"
+
+#if HAVE_WINSOCK2_H
+#include <winsock2.h>
+#include <ws2tcpip.h>
+#endif
+
+#include "stream.h"
+#include "libmpdemux/demuxer.h"
+#include "m_config.h"
+#include "mpcommon.h"
 #include "network.h"
-#include "tls.h"
+#include "tcp.h"
+#include "http.h"
+#include "cookies.h"
 #include "url.h"
-#include "libavutil/avassert.h"
-#include "libavutil/mem.h"
-#include "libavutil/time.h"
 
-#if defined(__MORPHOS__) || defined(__AROS__)
-#define D(x) x
+/* Variables for the command line option -user, -passwd, -bandwidth,
+   -user-agent and -nocookies */
+
+char *network_username=NULL;
+char *network_password=NULL;
+int   network_bandwidth=0;
+int   network_cookies_enabled = 0;
+char *network_useragent=NULL;
+char *network_referrer=NULL;
+char **network_http_header_fields=NULL;
+
+/* IPv6 options */
+int   network_ipv4_only_proxy = 0;
+
+
+const mime_struct_t mime_type_table[] = {
+#ifdef CONFIG_FFMPEG
+	// Flash Video
+	{ "video/x-flv", DEMUXER_TYPE_LAVF_PREFERRED},
+	// do not force any demuxer in this case!
+	// we want the lavf demuxer to be tried first (happens automatically anyway),
+	// but for mov reference files to work we must also try
+	// the native demuxer if lavf fails.
+	{ "video/quicktime", 0 },
 #endif
-
-int ff_tls_init(void)
-{
-#if CONFIG_TLS_PROTOCOL
-#if CONFIG_OPENSSL
-    int ret;
-    if ((ret = ff_openssl_init()) < 0)
-        return ret;
-#endif
-#if CONFIG_GNUTLS
-    ff_gnutls_init();
-#endif
-#endif
-    return 0;
-}
-
-void ff_tls_deinit(void)
-{
-#if CONFIG_TLS_PROTOCOL
-#if CONFIG_OPENSSL
-    ff_openssl_deinit();
-#endif
-#if CONFIG_GNUTLS
-    ff_gnutls_deinit();
-#endif
-#endif
-}
-
-int ff_network_init(void)
-{
-#if HAVE_WINSOCK2_H
-    WSADATA wsaData;
-
-    if (WSAStartup(MAKEWORD(1,1), &wsaData))
-        return 0;
-#endif
-#if defined(__MORPHOS__) || defined(__AROS__)
-    if(!ffmpegSocketBase)
-    {
-		D(kprintf("Opening ffmpeg socketbase\n"));
-		ffmpegSocketBase = SocketBase = OpenLibrary("bsdsocket.library", 0);
-
-        if(ffmpegSocketBase)
-        {
-            if(MySocketBaseTags(
-                SBTM_SETVAL(SBTC_ERRNOPTR(sizeof(errno))), (ULONG) &errno,
-				//SBTM_SETVAL(SBTC_HERRNOLONGPTR), (ULONG) &h_errno,
-				SBTM_SETVAL(SBTC_LOGTAGPTR), (ULONG) "ffmpeg",
-            TAG_DONE))
-			return 0;
-        }
-    }
-#endif
-    return 1;
-}
-
-int ff_network_wait_fd(int fd, int write)
-{
-    int ev = write ? POLLOUT : POLLIN;
-    struct pollfd p = { .fd = fd, .events = ev, .revents = 0 };
-    int ret;
-    ret = poll(&p, 1, POLLING_TIME);
-    return ret < 0 ? ff_neterrno() : p.revents & (ev | POLLERR | POLLHUP) ? 0 : AVERROR(EAGAIN);
-}
-
-int ff_network_wait_fd_timeout(int fd, int write, int64_t timeout, AVIOInterruptCB *int_cb)
-{
-    int ret;
-    int64_t wait_start = 0;
-
-    while (1) {
-        if (ff_check_interrupt(int_cb))
-            return AVERROR_EXIT;
-        ret = ff_network_wait_fd(fd, write);
-        if (ret != AVERROR(EAGAIN))
-            return ret;
-        if (timeout > 0) {
-            if (!wait_start)
-                wait_start = av_gettime_relative();
-            else if (av_gettime_relative() - wait_start > timeout)
-                return AVERROR(ETIMEDOUT);
-        }
-    }
-}
-
-int ff_network_sleep_interruptible(int64_t timeout, AVIOInterruptCB *int_cb)
-{
-    int64_t wait_start = av_gettime_relative();
-
-    while (1) {
-        int64_t time_left;
-
-        if (ff_check_interrupt(int_cb))
-            return AVERROR_EXIT;
-
-        time_left = timeout - (av_gettime_relative() - wait_start);
-        if (time_left <= 0)
-            return AVERROR(ETIMEDOUT);
-
-        av_usleep(FFMIN(time_left, POLLING_TIME * 1000));
-    }
-}
-
-void ff_network_close(void)
-{
-#if HAVE_WINSOCK2_H
-    WSACleanup();
-#endif
-}
-
-#if defined(__MORPHOS__) || defined(__AROS__)
-    if(ffmpegSocketBase)
-    {
-		D(kprintf("Closing ffmpeg socketbase\n"));
-        CloseLibrary(ffmpegSocketBase);
-        ffmpegSocketBase = SocketBase = NULL;
-    }
-#endif
-}
-
-#if HAVE_WINSOCK2_H
-int ff_neterrno(void)
-{
-    int err = WSAGetLastError();
-    switch (err) {
-    case WSAEWOULDBLOCK:
-        return AVERROR(EAGAIN);
-    case WSAEINTR:
-        return AVERROR(EINTR);
-    case WSAEPROTONOSUPPORT:
-        return AVERROR(EPROTONOSUPPORT);
-    case WSAETIMEDOUT:
-        return AVERROR(ETIMEDOUT);
-    case WSAECONNREFUSED:
-        return AVERROR(ECONNREFUSED);
-    case WSAEINPROGRESS:
-        return AVERROR(EINPROGRESS);
-    }
-    return -err;
-}
-#endif
-
-int ff_is_multicast_address(struct sockaddr *addr)
-{
-    if (addr->sa_family == AF_INET) {
-        return IN_MULTICAST(ntohl(((struct sockaddr_in *)addr)->sin_addr.s_addr));
-    }
-#if HAVE_STRUCT_SOCKADDR_IN6
-    if (addr->sa_family == AF_INET6) {
-        return IN6_IS_ADDR_MULTICAST(&((struct sockaddr_in6 *)addr)->sin6_addr);
-    }
-#endif
-
-    return 0;
-}
-
-static int ff_poll_interrupt(struct pollfd *p, nfds_t nfds, int timeout,
-                             AVIOInterruptCB *cb)
-{
-    int runs = timeout / POLLING_TIME;
-    int ret = 0;
-
-    do {
-        if (ff_check_interrupt(cb))
-            return AVERROR_EXIT;
-        ret = poll(p, nfds, POLLING_TIME);
-        if (ret != 0) {
-            if (ret < 0)
-                ret = ff_neterrno();
-            if (ret == AVERROR(EINTR))
-                continue;
-            break;
-        }
-    } while (timeout <= 0 || runs-- > 0);
-
-    if (!ret)
-        return AVERROR(ETIMEDOUT);
-    return ret;
-}
-
-int ff_socket(int af, int type, int proto, void *logctx)
-{
-    int fd;
-
-#ifdef SOCK_CLOEXEC
-    fd = socket(af, type | SOCK_CLOEXEC, proto);
-    if (fd == -1 && errno == EINVAL)
-#endif
-    {
-        fd = socket(af, type, proto);
-#if HAVE_FCNTL
-        if (fd != -1) {
-            if (fcntl(fd, F_SETFD, FD_CLOEXEC) == -1)
-                av_log(logctx, AV_LOG_DEBUG, "Failed to set close on exec\n");
-        }
-#endif
-    }
-#ifdef SO_NOSIGPIPE
-    if (fd != -1) {
-        if (setsockopt(fd, SOL_SOCKET, SO_NOSIGPIPE, &(int){1}, sizeof(int))) {
-             av_log(logctx, AV_LOG_WARNING, "setsockopt(SO_NOSIGPIPE) failed\n");
-        }
-    }
-#endif
-    return fd;
-}
-
-int ff_listen(int fd, const struct sockaddr *addr,
-              socklen_t addrlen, void *logctx)
-{
-    int ret;
-    int reuse = 1;
-    if (setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &reuse, sizeof(reuse))) {
-        av_log(logctx, AV_LOG_WARNING, "setsockopt(SO_REUSEADDR) failed\n");
-    }
-    ret = bind(fd, addr, addrlen);
-    if (ret)
-        return ff_neterrno();
-
-    ret = listen(fd, 1);
-    if (ret)
-        return ff_neterrno();
-    return ret;
-}
-
-int ff_accept(int fd, int timeout, URLContext *h)
-{
-    int ret;
-    struct pollfd lp = { fd, POLLIN, 0 };
-
-    ret = ff_poll_interrupt(&lp, 1, timeout, &h->interrupt_callback);
-    if (ret < 0)
-        return ret;
-
-    ret = accept(fd, NULL, NULL);
-    if (ret < 0)
-        return ff_neterrno();
-    if (ff_socket_nonblock(ret, 1) < 0)
-        av_log(h, AV_LOG_DEBUG, "ff_socket_nonblock failed\n");
-
-    return ret;
-}
-
-int ff_listen_bind(int fd, const struct sockaddr *addr,
-                   socklen_t addrlen, int timeout, URLContext *h)
-{
-    int ret;
-    if ((ret = ff_listen(fd, addr, addrlen, h)) < 0)
-        return ret;
-    if ((ret = ff_accept(fd, timeout, h)) < 0)
-        return ret;
-    closesocket(fd);
-    return ret;
-}
-
-int ff_listen_connect(int fd, const struct sockaddr *addr,
-                      socklen_t addrlen, int timeout, URLContext *h,
-                      int will_try_next)
-{
-    struct pollfd p = {fd, POLLOUT, 0};
-    int ret;
-    socklen_t optlen;
-
-    if (ff_socket_nonblock(fd, 1) < 0)
-        av_log(h, AV_LOG_DEBUG, "ff_socket_nonblock failed\n");
-
-    while ((ret = connect(fd, addr, addrlen))) {
-        ret = ff_neterrno();
-        switch (ret) {
-        case AVERROR(EINTR):
-            if (ff_check_interrupt(&h->interrupt_callback))
-                return AVERROR_EXIT;
-            continue;
-        case AVERROR(EINPROGRESS):
-        case AVERROR(EAGAIN):
-            ret = ff_poll_interrupt(&p, 1, timeout, &h->interrupt_callback);
-            if (ret < 0)
-                return ret;
-            optlen = sizeof(ret);
-            if (getsockopt (fd, SOL_SOCKET, SO_ERROR, &ret, &optlen))
-                ret = AVUNERROR(ff_neterrno());
-            if (ret != 0) {
-                char errbuf[100];
-                ret = AVERROR(ret);
-                av_strerror(ret, errbuf, sizeof(errbuf));
-                if (will_try_next)
-                    av_log(h, AV_LOG_WARNING,
-                           "Connection to %s failed (%s), trying next address\n",
-                           h->filename, errbuf);
-                else
-                    av_log(h, AV_LOG_ERROR, "Connection to %s failed: %s\n",
-                           h->filename, errbuf);
-            }
-        default:
-            return ret;
-        }
-    }
-    return ret;
-}
-
-static void interleave_addrinfo(struct addrinfo *base)
-{
-    struct addrinfo **next = &base->ai_next;
-    while (*next) {
-        struct addrinfo *cur = *next;
-        // Iterate forward until we find an entry of a different family.
-        if (cur->ai_family == base->ai_family) {
-            next = &cur->ai_next;
-            continue;
-        }
-        if (cur == base->ai_next) {
-            // If the first one following base is of a different family, just
-            // move base forward one step and continue.
-            base = cur;
-            next = &base->ai_next;
-            continue;
-        }
-        // Unchain cur from the rest of the list from its current spot.
-        *next = cur->ai_next;
-        // Hook in cur directly after base.
-        cur->ai_next = base->ai_next;
-        base->ai_next = cur;
-        // Restart with a new base. We know that before moving the cur element,
-        // everything between the previous base and cur had the same family,
-        // different from cur->ai_family. Therefore, we can keep next pointing
-        // where it was, and continue from there with base at the one after
-        // cur.
-        base = cur->ai_next;
-    }
-}
-
-static void print_address_list(void *ctx, const struct addrinfo *addr,
-                               const char *title)
-{
-    char hostbuf[100], portbuf[20];
-    av_log(ctx, AV_LOG_DEBUG, "%s:\n", title);
-    while (addr) {
-        getnameinfo(addr->ai_addr, addr->ai_addrlen,
-                    hostbuf, sizeof(hostbuf), portbuf, sizeof(portbuf),
-                    NI_NUMERICHOST | NI_NUMERICSERV);
-        av_log(ctx, AV_LOG_DEBUG, "Address %s port %s\n", hostbuf, portbuf);
-        addr = addr->ai_next;
-    }
-}
-
-struct ConnectionAttempt {
-    int fd;
-    int64_t deadline_us;
-    struct addrinfo *addr;
+	// MP3 streaming, some MP3 streaming server answer with audio/mpeg
+	{ "audio/mpeg", DEMUXER_TYPE_AUDIO },
+	// MPEG streaming
+	{ "video/mpeg", DEMUXER_TYPE_UNKNOWN },
+	{ "video/x-mpeg", DEMUXER_TYPE_UNKNOWN },
+	{ "video/x-mpeg2", DEMUXER_TYPE_UNKNOWN },
+	// AVI ??? => video/x-msvideo
+	{ "video/x-msvideo", DEMUXER_TYPE_AVI },
+	{ "video/vnd.avi", DEMUXER_TYPE_AVI },
+	// MOV => video/quicktime
+	{ "video/quicktime", DEMUXER_TYPE_MOV },
+	// ASF
+        { "audio/x-ms-wax", DEMUXER_TYPE_ASF },
+	{ "audio/x-ms-wma", DEMUXER_TYPE_ASF },
+	{ "video/x-ms-asf", DEMUXER_TYPE_ASF },
+	{ "video/x-ms-afs", DEMUXER_TYPE_ASF },
+	{ "video/x-ms-wmv", DEMUXER_TYPE_ASF },
+	{ "video/x-ms-wma", DEMUXER_TYPE_ASF },
+	{ "application/x-mms-framed", DEMUXER_TYPE_ASF },
+	{ "application/vnd.ms.wms-hdr.asfv1", DEMUXER_TYPE_ASF },
+	{ "application/octet-stream", DEMUXER_TYPE_UNKNOWN },
+	// Playlists
+	{ "video/x-ms-wmx", DEMUXER_TYPE_PLAYLIST },
+	{ "video/x-ms-wvx", DEMUXER_TYPE_PLAYLIST },
+	{ "audio/x-scpls", DEMUXER_TYPE_PLAYLIST },
+	{ "audio/x-mpegurl", DEMUXER_TYPE_PLAYLIST },
+	{ "audio/x-pls", DEMUXER_TYPE_PLAYLIST },
+	// Real Media
+//	{ "audio/x-pn-realaudio", DEMUXER_TYPE_REAL },
+	// OGG Streaming
+	{ "application/ogg", DEMUXER_TYPE_OGG },
+	{ "application/x-ogg", DEMUXER_TYPE_OGG },
+	{ "audio/ogg", DEMUXER_TYPE_OGG },
+	{ "video/ogg", DEMUXER_TYPE_OGG },
+	// NullSoft Streaming Video
+	{ "video/nsv", DEMUXER_TYPE_NSV},
+	{ "misc/ultravox", DEMUXER_TYPE_NSV},
+	// HLS Streaming/AppleHttp
+	{ "application/vnd.apple.mpegurl", DEMUXER_TYPE_LAVF},
+	{ "application/x-mpegURL", DEMUXER_TYPE_LAVF},
+	{ NULL, DEMUXER_TYPE_UNKNOWN},
 };
 
-// Returns < 0 on error, 0 on successfully started connection attempt,
-// > 0 for a connection that succeeded already.
-static int start_connect_attempt(struct ConnectionAttempt *attempt,
-                                 struct addrinfo **ptr, int timeout_ms,
-                                 URLContext *h,
-                                 void (*customize_fd)(void *, int), void *customize_ctx)
-{
-    struct addrinfo *ai = *ptr;
-    int ret;
 
-    *ptr = ai->ai_next;
-
-    attempt->fd = ff_socket(ai->ai_family, ai->ai_socktype, ai->ai_protocol, h);
-    if (attempt->fd < 0)
-        return ff_neterrno();
-    attempt->deadline_us = av_gettime_relative() + timeout_ms * 1000;
-    attempt->addr = ai;
-
-    ff_socket_nonblock(attempt->fd, 1);
-
-    if (customize_fd)
-        customize_fd(customize_ctx, attempt->fd);
-
-    while ((ret = connect(attempt->fd, ai->ai_addr, ai->ai_addrlen))) {
-        ret = ff_neterrno();
-        switch (ret) {
-        case AVERROR(EINTR):
-            if (ff_check_interrupt(&h->interrupt_callback)) {
-                closesocket(attempt->fd);
-                attempt->fd = -1;
-                return AVERROR_EXIT;
-            }
-            continue;
-        case AVERROR(EINPROGRESS):
-        case AVERROR(EAGAIN):
-            return 0;
-        default:
-            closesocket(attempt->fd);
-            attempt->fd = -1;
-            return ret;
-        }
-    }
-    return 1;
+streaming_ctrl_t *
+streaming_ctrl_new(void) {
+	streaming_ctrl_t *streaming_ctrl = calloc(1, sizeof(*streaming_ctrl));
+	if (!SocketBase)
+	{
+//		if ( ! (SocketBase = OpenLibrary("bsdsocket.library", 0L) ) )
+//		{
+//			return NULL;
+//		}
+//		else
+//		{
+//			if(0)
+//			// if(SocketBaseTags(SBTM_SETVAL(SBTC_ERRNOPTR(sizeof(errno))), (ULONG) &errno, SBTM_SETVAL(SBTC_LOGTAGPTR), (ULONG) "MPlayer", TAG_DONE))
+//			{
+//				CloseLibrary(SocketBase);
+//				SocketBase = NULL;
+//				return NULL;
+//			}
+//		}
+//	}
+// #endif
+	if( streaming_ctrl==NULL ) {
+		mp_msg(MSGT_NETWORK,MSGL_FATAL,MSGTR_MemAllocFailed);
+		return NULL;
+	}
+	return streaming_ctrl;
 }
 
-// Try a new connection to another address after 200 ms, as suggested in
-// RFC 8305 (or sooner if an earlier attempt fails).
-#define NEXT_ATTEMPT_DELAY_MS 200
+void
+streaming_ctrl_free( streaming_ctrl_t *streaming_ctrl ) {
+	if( streaming_ctrl==NULL ) return;
+	if( streaming_ctrl->url ) url_free( streaming_ctrl->url );
+	free(streaming_ctrl->buffer);
+	free(streaming_ctrl->data);
+	free(streaming_ctrl);
+// #if defined(__MORPHOS__) || defined(__AROS__)
+//	if(SocketBase)
+//	{
+//	  	CloseLibrary(SocketBase);
+//		SocketBase = NULL;
+//	}
+// #endif
+}
 
-int ff_connect_parallel(struct addrinfo *addrs, int timeout_ms_per_address,
-                        int parallel, URLContext *h, int *fd,
-                        void (*customize_fd)(void *, int), void *customize_ctx)
+URL_t*
+check4proxies( const URL_t *url ) {
+	URL_t *url_out = NULL;
+	if( url==NULL ) return NULL;
+	url_out = url_new( url->url );
+	if( !av_strcasecmp(url->protocol, "http_proxy") ) {
+		mp_msg(MSGT_NETWORK,MSGL_V,"Using HTTP proxy: http://%s:%d\n", url->hostname, url->port );
+		return url_out;
+	}
+	// Check if the http_proxy environment variable is set.
+	if( !av_strcasecmp(url->protocol, "http") ) {
+		char *proxy;
+		proxy = getenv("http_proxy");
+		if( proxy!=NULL ) {
+			// We got a proxy, build the URL to use it
+			char *new_url;
+			URL_t *tmp_url;
+			URL_t *proxy_url = url_new( proxy );
+
+			if( proxy_url==NULL ) {
+				mp_msg(MSGT_NETWORK,MSGL_WARN,
+					MSGTR_MPDEMUX_NW_InvalidProxySettingTryingWithout);
+				return url_out;
+			}
+
+#ifdef HAVE_AF_INET6
+			if (network_ipv4_only_proxy && (gethostbyname(url->hostname)==NULL)) {
+				mp_msg(MSGT_NETWORK,MSGL_WARN,
+					MSGTR_MPDEMUX_NW_CantResolvTryingWithoutProxy);
+				url_free(proxy_url);
+				return url_out;
+			}
+#endif
+
+			mp_msg(MSGT_NETWORK,MSGL_V,"Using HTTP proxy: %s\n", proxy_url->url );
+			new_url = get_http_proxy_url(proxy_url, url->url);
+			if( new_url==NULL ) {
+				mp_msg(MSGT_NETWORK,MSGL_FATAL,MSGTR_MemAllocFailed);
+				url_free(proxy_url);
+				return url_out;
+			}
+			tmp_url = url_new( new_url );
+			if( tmp_url==NULL ) {
+				free( new_url );
+				url_free( proxy_url );
+				return url_out;
+			}
+			url_free( url_out );
+			url_out = tmp_url;
+			free( new_url );
+			url_free( proxy_url );
+		}
+	}
+	return url_out;
+}
+
+URL_t *url_new_with_proxy(const char *urlstr)
 {
-    struct ConnectionAttempt attempts[3];
-    struct pollfd pfd[3];
-    int nb_attempts = 0, i, j;
-    int64_t next_attempt_us = av_gettime_relative(), next_deadline_us;
-    int last_err = AVERROR(EIO);
-    socklen_t optlen;
-    char errbuf[100], hostbuf[100], portbuf[20];
+	URL_t *url = url_new(urlstr);
+	URL_t *url_with_proxy = check4proxies(url);
+	url_free(url);
+	return url_with_proxy;
+}
 
-    if (parallel > FF_ARRAY_ELEMS(attempts))
-        parallel = FF_ARRAY_ELEMS(attempts);
+int
+http_send_request( URL_t *url, int64_t pos ) {
+	HTTP_header_t *http_hdr;
+	URL_t *server_url;
+	char str[256];
+	int fd = -1;
+	int ret;
+	int proxy = 0;		// Boolean
 
-    print_address_list(h, addrs, "Original list of addresses");
-    // This mutates the list, but the head of the list is still the same
-    // element, so the caller, who owns the list, doesn't need to get
-    // an updated pointer.
-    interleave_addrinfo(addrs);
-    print_address_list(h, addrs, "Interleaved list of addresses");
+	http_hdr = http_new_header();
 
-    while (nb_attempts > 0 || addrs) {
-        // Start a new connection attempt, if possible.
-        if (nb_attempts < parallel && addrs) {
-            getnameinfo(addrs->ai_addr, addrs->ai_addrlen,
-                        hostbuf, sizeof(hostbuf), portbuf, sizeof(portbuf),
-                        NI_NUMERICHOST | NI_NUMERICSERV);
-            av_log(h, AV_LOG_VERBOSE, "Starting connection attempt to %s port %s\n",
-                                      hostbuf, portbuf);
-            last_err = start_connect_attempt(&attempts[nb_attempts], &addrs,
-                                             timeout_ms_per_address, h,
-                                             customize_fd, customize_ctx);
-            if (last_err < 0) {
-                av_strerror(last_err, errbuf, sizeof(errbuf));
-                av_log(h, AV_LOG_VERBOSE, "Connected attempt failed: %s\n",
-                                          errbuf);
+	if( !av_strcasecmp(url->protocol, "http_proxy") ) {
+		proxy = 1;
+		server_url = url_new( (url->file)+1 );
+		if (!server_url) {
+			mp_msg(MSGT_NETWORK, MSGL_ERR, "Invalid URL '%s' to proxify\n", url->file+1);
+			goto err_out;
+		}
+		http_set_uri( http_hdr, server_url->noauth_url );
+	} else {
+		server_url = url;
+		http_set_uri( http_hdr, server_url->file );
+	}
+	if (server_url->port && server_url->port != 80)
+	    snprintf(str, sizeof(str), "Host: %s:%d", server_url->hostname, server_url->port );
+	else
+	    snprintf(str, sizeof(str), "Host: %s", server_url->hostname );
+	http_set_field( http_hdr, str);
+	if (network_useragent)
+	    snprintf(str, sizeof(str), "User-Agent: %s", network_useragent);
+	else
+	    snprintf(str, sizeof(str), "User-Agent: %s", mplayer_version);
+        http_set_field(http_hdr, str);
+
+	if (network_referrer) {
+	    char *referrer = NULL;
+	    size_t len = strlen(network_referrer) + 10;
+
+	    // Check len to ensure we don't do something really bad in case of an overflow
+	    if (len > 10)
+		referrer = malloc(len);
+
+	    if (referrer == NULL) {
+		mp_msg(MSGT_NETWORK, MSGL_FATAL, MSGTR_MemAllocFailed);
+	    } else {
+		snprintf(referrer, len, "Referer: %s", network_referrer);
+		http_set_field(http_hdr, referrer);
+		free(referrer);
+	    }
+	}
+
+	if( av_strcasecmp(url->protocol, "noicyx") )
+	    http_set_field(http_hdr, "Icy-MetaData: 1");
+
+	if(pos>0) {
+	// Extend http_send_request with possibility to do partial content retrieval
+	    snprintf(str, sizeof(str), "Range: bytes=%"PRId64"-", (int64_t)pos);
+	    http_set_field(http_hdr, str);
+	}
+
+	if (network_cookies_enabled) cookies_set( http_hdr, server_url->hostname, server_url->url );
+
+	if (network_http_header_fields) {
+		int i=0;
+		while (network_http_header_fields[i])
+			http_set_field(http_hdr, network_http_header_fields[i++]);
+	}
+
+	http_set_field( http_hdr, "Connection: close");
+	if (proxy)
+		http_add_basic_proxy_authentication(http_hdr, url->username, url->password);
+	http_add_basic_authentication(http_hdr, server_url->username, server_url->password);
+	if( http_build_request( http_hdr )==NULL ) {
+		goto err_out;
+	}
+
+	if( proxy ) {
+		if( url->port==0 ) url->port = 8080;			// Default port for the proxy server
+		fd = connect2Server( url->hostname, url->port,1 );
+		url_free( server_url );
+		server_url = NULL;
+	} else {
+		if( server_url->port==0 ) server_url->port = 80;	// Default port for the web server
+		fd = connect2Server( server_url->hostname, server_url->port,1 );
+	}
+	if( fd<0 ) {
+		goto err_out;
+	}
+	mp_msg(MSGT_NETWORK,MSGL_DBG2,"Request: [%s]\n", http_hdr->buffer );
+
+	ret = send( fd, http_hdr->buffer, http_hdr->buffer_size, DEFAULT_SEND_FLAGS );
+	if( ret!=(int)http_hdr->buffer_size ) {
+		mp_msg(MSGT_NETWORK,MSGL_ERR,MSGTR_MPDEMUX_NW_ErrSendingHTTPRequest);
+		goto err_out;
+	}
+
+	http_free( http_hdr );
+
+	return fd;
+err_out:
+	if (fd > 0) closesocket(fd);
+	http_free(http_hdr);
+	if (proxy && server_url)
+		url_free(server_url);
+	return -1;
+}
+
+HTTP_header_t *
+http_read_response( int fd ) {
+	HTTP_header_t *http_hdr;
+	char response[BUFFER_SIZE];
+	int i;
+
+	http_hdr = http_new_header();
+	if( http_hdr==NULL ) {
+		return NULL;
+	}
+
+	do {
+		i = recv( fd, response, BUFFER_SIZE, 0 );
+		if( i<0 ) {
+			mp_msg(MSGT_NETWORK,MSGL_ERR,MSGTR_MPDEMUX_NW_ReadFailed);
+			http_free( http_hdr );
+			return NULL;
+		}
+		if( i==0 ) {
+			mp_msg(MSGT_NETWORK,MSGL_ERR,MSGTR_MPDEMUX_NW_Read0CouldBeEOF);
+			http_free( http_hdr );
+			return NULL;
+		}
+		http_response_append( http_hdr, response, i );
+	} while( !http_is_header_entire( http_hdr ) );
+	if (http_response_parse( http_hdr ) < 0) {
+		http_free( http_hdr );
+		return NULL;
+	}
+	return http_hdr;
+}
+
+int
+http_authenticate(HTTP_header_t *http_hdr, URL_t *url, int *auth_retry) {
+	char *aut;
+
+	if( *auth_retry==1 ) {
+		mp_msg(MSGT_NETWORK,MSGL_ERR,MSGTR_MPDEMUX_NW_AuthFailed);
+		return -1;
+	}
+	if( *auth_retry>0 ) {
+		free(url->username);
+		url->username = NULL;
+		free(url->password);
+		url->password = NULL;
+	}
+
+	aut = http_get_field(http_hdr, "WWW-Authenticate");
+	if( aut!=NULL ) {
+		char *aut_space;
+		aut_space = strstr(aut, "realm=");
+		if( aut_space!=NULL ) aut_space += 6;
+		mp_msg(MSGT_NETWORK,MSGL_INFO,MSGTR_MPDEMUX_NW_AuthRequiredFor, aut_space);
+	} else {
+		mp_msg(MSGT_NETWORK,MSGL_INFO,MSGTR_MPDEMUX_NW_AuthRequired);
+	}
+	if( network_username ) {
+		url->username = strdup(network_username);
+		if( url->username==NULL ) {
+			mp_msg(MSGT_NETWORK,MSGL_FATAL,MSGTR_MemAllocFailed);
+			return -1;
+		}
+	} else {
+		mp_msg(MSGT_NETWORK,MSGL_ERR,MSGTR_MPDEMUX_NW_AuthFailed);
+		return -1;
+	}
+	if( network_password ) {
+		url->password = strdup(network_password);
+		if( url->password==NULL ) {
+			mp_msg(MSGT_NETWORK,MSGL_FATAL,MSGTR_MemAllocFailed);
+			return -1;
+		}
+	} else {
+		mp_msg(MSGT_NETWORK,MSGL_INFO,MSGTR_MPDEMUX_NW_NoPasswdProvidedTryingBlank);
+	}
+	(*auth_retry)++;
+	return 0;
+}
+
+int
+http_seek( stream_t *stream, int64_t pos ) {
+	HTTP_header_t *http_hdr = NULL;
+	int fd;
+	if( stream==NULL ) return 0;
+
+	if( stream->fd>0 ) closesocket(stream->fd); // need to reconnect to seek in http-stream
+	fd = http_send_request( stream->streaming_ctrl->url, pos );
+	if( fd<0 ) return 0;
+
+	http_hdr = http_read_response( fd );
+
+	if( http_hdr==NULL ) return 0;
+
+	if( mp_msg_test(MSGT_NETWORK,MSGL_V) )
+		http_debug_hdr( http_hdr );
+
+	switch( http_hdr->status_code ) {
+		case 200:
+		case 206: // OK
+			mp_msg(MSGT_NETWORK,MSGL_V,"Content-Type: [%s]\n", http_get_field(http_hdr, "Content-Type") );
+			mp_msg(MSGT_NETWORK,MSGL_V,"Content-Length: [%s]\n", http_get_field(http_hdr, "Content-Length") );
+			if( http_hdr->body_size>0 ) {
+				if( streaming_bufferize( stream->streaming_ctrl, http_hdr->body, http_hdr->body_size )<0 ) {
+					http_free( http_hdr );
+					return -1;
+				}
+			}
+			break;
+		default:
+			mp_msg(MSGT_NETWORK,MSGL_ERR,MSGTR_MPDEMUX_NW_ErrServerReturned, http_hdr->status_code, http_hdr->reason_phrase );
+			closesocket( fd );
+			fd = -1;
+	}
+	stream->fd = fd;
+
+	if( http_hdr ) {
+		http_free( http_hdr );
+		stream->streaming_ctrl->data = NULL;
+	}
+
+	stream->pos=pos;
+
+	return 1;
+}
+
+
+int
+streaming_bufferize( streaming_ctrl_t *streaming_ctrl, char *buffer, int size) {
+//printf("streaming_bufferize\n");
+	streaming_ctrl->buffer = malloc(size);
+	if( streaming_ctrl->buffer==NULL ) {
+		mp_msg(MSGT_NETWORK,MSGL_FATAL,MSGTR_MemAllocFailed);
+		return -1;
+	}
+	memcpy( streaming_ctrl->buffer, buffer, size );
+	streaming_ctrl->buffer_size = size;
+	return size;
+}
+
+int
+nop_streaming_read( int fd, char *buffer, int size, streaming_ctrl_t *stream_ctrl ) {
+	int len=0;
+//printf("nop_streaming_read\n");
+	if( stream_ctrl->buffer_size!=0 ) {
+		int buffer_len = stream_ctrl->buffer_size-stream_ctrl->buffer_pos;
+//printf("%d bytes in buffer\n", stream_ctrl->buffer_size);
+		len = (size<buffer_len)?size:buffer_len;
+		memcpy( buffer, (stream_ctrl->buffer)+(stream_ctrl->buffer_pos), len );
+		stream_ctrl->buffer_pos += len;
+//printf("buffer_pos = %d\n", stream_ctrl->buffer_pos );
+		if( stream_ctrl->buffer_pos>=stream_ctrl->buffer_size ) {
+			free( stream_ctrl->buffer );
+			stream_ctrl->buffer = NULL;
+			stream_ctrl->buffer_size = 0;
+			stream_ctrl->buffer_pos = 0;
+//printf("buffer cleaned\n");
+		}
+//printf("read %d bytes from buffer\n", len );
+	}
+
+	if( len<size ) {
+		int ret;
+		ret = recv( fd, buffer+len, size-len, 0 );
+		if( ret<0 ) {
+			mp_msg(MSGT_NETWORK,MSGL_ERR,"nop_streaming_read error : %s\n",strerror(errno));
+			ret = 0;
+		} else if (ret == 0)
+			stream_ctrl->status = streaming_stopped_e;
+		len += ret;
+//printf("read %d bytes from network\n", len );
+	}
+
+	return len;
+}
+
+int
+nop_streaming_seek( int fd, int64_t pos, streaming_ctrl_t *stream_ctrl ) {
+	return -1;
+}
+
+
+void fixup_network_stream_cache(stream_t *stream) {
+  if(stream->streaming_ctrl->buffering) {
+    if(stream_cache_size<0) {
+      // cache option not set, will use our computed value.
+      // buffer in KBytes, *5 because the prefill is 20% of the buffer.
+      stream_cache_size = (stream->streaming_ctrl->prebuffer_size/1024)*5;
+      if( stream_cache_size<64 ) stream_cache_size = 64;	// 16KBytes min buffer
+    }
+// #if !defined(__MORPHOS__) && !defined(__AROS__)
+    mp_msg(MSGT_NETWORK,MSGL_INFO,MSGTR_MPDEMUX_NW_CacheSizeSetTo, stream_cache_size);
+/ #endif
+  }
+}
+
+/* #if defined(__MORPHOS__) || defined(__AROS__)
+
+void socket_block(int socket_fd, char val)
+{
+	IoctlSocket(socket_fd, FIONBIO, &val);
+	errno = EINPROGRESS;
+}
+
+int myrecv(int socket_fd, unsigned char *buf, int size, int glag)
+{
+    int len, fd_max, ret;
+    fd_set rfds;
+    struct timeval tv;
+
+	for (;;)
+	{
+		if (stream_check_interrupt(500))
+			return -1;
+
+		fd_max = socket_fd;
+        FD_ZERO(&rfds);
+		FD_SET(socket_fd, &rfds);
+        tv.tv_sec = 0;
+        tv.tv_usec = 100 * 1000;
+		ret = select(fd_max + 1, &rfds, NULL, NULL, &tv);
+		if (ret > 0 && FD_ISSET(socket_fd, &rfds))
+		{
+			len = recv(socket_fd, buf, size, 0);
+			if (len < 0)
+			{
+				if (errno != EINTR && errno != EAGAIN)
+					return -1;
+			}
+			else
+				return len;
+		}
+		else if (ret < 0)
+		{
+            return -1;
+        }
+    }
+}
+
+int mysend(int socket_fd, unsigned char *buf, int size, int flag)
+{
+    int ret, size1, fd_max, len;
+    fd_set wfds;
+    struct timeval tv;
+
+    size1 = size;
+	while (size > 0)
+	{
+		if (stream_check_interrupt(500))
+			return -1;
+		fd_max = socket_fd;
+        FD_ZERO(&wfds);
+		FD_SET(socket_fd, &wfds);
+        tv.tv_sec = 0;
+        tv.tv_usec = 100 * 1000;
+		ret = select(fd_max + 1, NULL, &wfds, NULL, &tv);
+		if (ret > 0 && FD_ISSET(socket_fd, &wfds))
+		{
+			len = send(socket_fd, buf, size, 0);
+			if (len < 0)
+			{
+				if (errno != EINTR && errno != EAGAIN)
+					return -1;
                 continue;
             }
-            if (last_err > 0) {
-                for (i = 0; i < nb_attempts; i++)
-                    closesocket(attempts[i].fd);
-                *fd = attempts[nb_attempts].fd;
-                return 0;
-            }
-            pfd[nb_attempts].fd = attempts[nb_attempts].fd;
-            pfd[nb_attempts].events = POLLOUT;
-            next_attempt_us = av_gettime_relative() + NEXT_ATTEMPT_DELAY_MS * 1000;
-            nb_attempts++;
-        }
-
-        av_assert0(nb_attempts > 0);
-        // The connection attempts are sorted from oldest to newest, so the
-        // first one will have the earliest deadline.
-        next_deadline_us = attempts[0].deadline_us;
-        // If we can start another attempt in parallel, wait until that time.
-        if (nb_attempts < parallel && addrs)
-            next_deadline_us = FFMIN(next_deadline_us, next_attempt_us);
-        last_err = ff_poll_interrupt(pfd, nb_attempts,
-                                     (next_deadline_us - av_gettime_relative())/1000,
-                                     &h->interrupt_callback);
-        if (last_err < 0 && last_err != AVERROR(ETIMEDOUT))
-            break;
-
-        // Check the status from the poll output.
-        for (i = 0; i < nb_attempts; i++) {
-            last_err = 0;
-            if (pfd[i].revents) {
-                // Some sort of action for this socket, check its status (either
-                // a successful connection or an error).
-                optlen = sizeof(last_err);
-                if (getsockopt(attempts[i].fd, SOL_SOCKET, SO_ERROR, &last_err, &optlen))
-                    last_err = ff_neterrno();
-                else if (last_err != 0)
-                    last_err = AVERROR(last_err);
-                if (last_err == 0) {
-                    // Everything is ok, we seem to have a successful
-                    // connection. Close other sockets and return this one.
-                    for (j = 0; j < nb_attempts; j++)
-                        if (j != i)
-                            closesocket(attempts[j].fd);
-                    *fd = attempts[i].fd;
-                    getnameinfo(attempts[i].addr->ai_addr, attempts[i].addr->ai_addrlen,
-                                hostbuf, sizeof(hostbuf), portbuf, sizeof(portbuf),
-                                NI_NUMERICHOST | NI_NUMERICSERV);
-                    av_log(h, AV_LOG_VERBOSE, "Successfully connected to %s port %s\n",
-                                              hostbuf, portbuf);
-                    return 0;
-                }
-            }
-            if (attempts[i].deadline_us < av_gettime_relative() && !last_err)
-                last_err = AVERROR(ETIMEDOUT);
-            if (!last_err)
-                continue;
-            // Error (or timeout) for this socket; close the socket and remove
-            // it from the attempts/pfd arrays, to let a new attempt start
-            // directly.
-            getnameinfo(attempts[i].addr->ai_addr, attempts[i].addr->ai_addrlen,
-                        hostbuf, sizeof(hostbuf), portbuf, sizeof(portbuf),
-                        NI_NUMERICHOST | NI_NUMERICSERV);
-            av_strerror(last_err, errbuf, sizeof(errbuf));
-            av_log(h, AV_LOG_VERBOSE, "Connection attempt to %s port %s "
-                                      "failed: %s\n", hostbuf, portbuf, errbuf);
-            closesocket(attempts[i].fd);
-            memmove(&attempts[i], &attempts[i + 1],
-                    (nb_attempts - i - 1) * sizeof(*attempts));
-            memmove(&pfd[i], &pfd[i + 1],
-                    (nb_attempts - i - 1) * sizeof(*pfd));
-            i--;
-            nb_attempts--;
+            size -= len;
+            buf += len;
+		}
+		else if (ret < 0)
+		{
+            return -1;
         }
     }
-    for (i = 0; i < nb_attempts; i++)
-        closesocket(attempts[i].fd);
-    if (last_err >= 0)
-        last_err = AVERROR(ECONNREFUSED);
-    if (last_err != AVERROR_EXIT) {
-        av_strerror(last_err, errbuf, sizeof(errbuf));
-        av_log(h, AV_LOG_ERROR, "Connection to %s failed: %s\n",
-               h->filename, errbuf);
-    }
-    return last_err;
+    return size1 - size;
 }
 
-static int match_host_pattern(const char *pattern, const char *hostname)
-{
-    int len_p, len_h;
-    if (!strcmp(pattern, "*"))
-        return 1;
-    // Skip a possible *. at the start of the pattern
-    if (pattern[0] == '*')
-        pattern++;
-    if (pattern[0] == '.')
-        pattern++;
-    len_p = strlen(pattern);
-    len_h = strlen(hostname);
-    if (len_p > len_h)
-        return 0;
-    // Simply check if the end of hostname is equal to 'pattern'
-    if (!strcmp(pattern, &hostname[len_h - len_p])) {
-        if (len_h == len_p)
-            return 1; // Exact match
-        if (hostname[len_h - len_p - 1] == '.')
-            return 1; // The matched substring is a domain and not just a substring of a domain
-    }
-    return 0;
-}
+#endif */
 
-int ff_http_match_no_proxy(const char *no_proxy, const char *hostname)
-{
-    char *buf, *start;
-    int ret = 0;
-    if (!no_proxy)
-        return 0;
-    if (!hostname)
-        return 0;
-    buf = av_strdup(no_proxy);
-    if (!buf)
-        return 0;
-    start = buf;
-    while (start) {
-        char *sep, *next = NULL;
-        start += strspn(start, " ,");
-        sep = start + strcspn(start, " ,");
-        if (*sep) {
-            next = sep + 1;
-            *sep = '\0';
-        }
-        if (match_host_pattern(start, hostname)) {
-            ret = 1;
-            break;
-        }
-        start = next;
-    }
-    av_free(buf);
-    return ret;
-}
-
-void ff_log_net_error(void *ctx, int level, const char* prefix)
-{
-    char errbuf[100];
-    av_strerror(ff_neterrno(), errbuf, sizeof(errbuf));
-    av_log(ctx, level, "%s: %s\n", prefix, errbuf);
-}
